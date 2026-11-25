@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>트레이딩 앱</title>
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--ink:#1d1d1f;--mute:#6b6b70;--line:#e3e3df;--acc:#2f5fd0;--pos:#1f8a4c;--neg:#c0392b;--warn:#b7791f;--chip:#eef1f8}
+@media (prefers-color-scheme:dark){:root{--bg:#141416;--card:#1d1d20;--ink:#ececef;--mute:#9a9aa2;--line:#2e2e33;--acc:#7aa2ff;--pos:#4cc184;--neg:#ff6b5e;--warn:#e0b04a;--chip:#262a36}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,"Segoe UI","Malgun Gothic",sans-serif}
+header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px;z-index:5}
+h1{font-size:16px;margin:0 0 6px}
+nav button{background:none;border:0;padding:6px 10px;margin-right:2px;border-radius:6px;color:var(--mute);font:inherit;cursor:pointer}
+nav button.on{background:var(--chip);color:var(--ink);font-weight:600}
+main{padding:16px;max-width:1280px;margin:auto}
+@media (max-width:640px){main{padding:10px}.card{padding:10px}.row{gap:12px}.kpi b{font-size:16px}th,td{padding:5px 6px}nav{overflow-x:auto;white-space:nowrap}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+.row{display:flex;flex-wrap:wrap;gap:18px}
+.kpi b{display:block;font-size:18px}
+.kpi>span{color:var(--mute);font-size:12px}
+table{border-collapse:collapse;width:100%}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
+th{color:var(--mute);font-weight:500;font-size:12px}
+.wrap{overflow-x:auto}
+.pos{color:var(--pos)}.neg{color:var(--neg)}.warn{color:var(--warn)}.mute{color:var(--mute)}
+.tag{display:inline-block;padding:1px 7px;border-radius:9px;background:var(--chip);font-size:12px}
+.sig{font-weight:700;color:var(--acc)}
+input,select,textarea{font:inherit;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
+button.b{font:inherit;padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:var(--chip);color:var(--ink);cursor:pointer}
+button.p{background:var(--acc);color:#fff;border-color:var(--acc)}
+.form{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;align-items:end}
+.form label{font-size:12px;color:var(--mute);display:flex;flex-direction:column;gap:3px}
+.err{background:#fdecea;color:#8a1f11;padding:8px 12px;border-radius:8px;margin-bottom:12px}
+pre{white-space:pre-wrap;background:var(--chip);padding:10px;border-radius:8px}
+small{color:var(--mute)}
+</style>
+</head>
+<body>
+<header>
+  <h1>트레이딩 앱 <small id="stamp"></small></h1>
+  <nav id="nav"></nav>
+</header>
+<main id="main">불러오는 중…</main>
+<script>
+// 폰 뷰어: GitHub Pages에 올라간 암호화 사본을 풀어서 앱 화면을 그대로 보여준다 (읽기 전용)
+window.SNAP_MODE = true;
+(function(){
+  const LS = k => { try { return localStorage.getItem(k) } catch (e) { return null } };
+  const SS = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v) } catch (e) {} };
+  const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  async function decrypt(blob, pw) {
+    const d = JSON.parse(blob);
+    const km = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b64(d.salt), iterations: d.iter, hash: 'SHA-256' },
+      km, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64(d.iv) }, key, b64(d.ct));
+    const ds = new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return JSON.parse(await new Response(ds).text());
+  }
+  function askPw(msg) {
+    return new Promise(res => {
+      const o = document.createElement('div');
+      o.style.cssText = 'position:fixed;inset:0;background:var(--bg);z-index:99;display:flex;align-items:center;justify-content:center;padding:16px';
+      o.innerHTML = `<div class="card" style="max-width:360px;width:100%"><h3>트레이딩 앱</h3><p><small>${msg}</small></p>
+        <input id="pw" type="password" style="width:100%" placeholder="비밀번호"><p><button class="b p" id="pwb" style="width:100%">열기</button></p></div>`;
+      document.body.appendChild(o);
+      const go = () => { const v = o.querySelector('#pw').value; o.remove(); res(v) };
+      o.querySelector('#pwb').onclick = go;
+      o.querySelector('#pw').onkeydown = e => { if (e.key === 'Enter') go() };
+      setTimeout(() => o.querySelector('#pw').focus(), 50);
+    });
+  }
+  window.SNAP_READY = (async () => {
+    let blob = null, online = true;
+    try { const r = await fetch('data.json?t=' + Date.now(), { cache: 'no-store' }); if (!r.ok) throw 0; blob = await r.text(); SS('snap_blob', blob) }
+    catch (e) { blob = LS('snap_blob'); online = false }
+    if (!blob) { document.body.innerHTML = '<main><div class="card">데이터를 받지 못했습니다. 인터넷 연결 후 다시 열어 주세요.</div></main>'; throw 'nodata' }
+    let pw = LS('snap_pw'), msg = 'PC 앱에서 정한 비밀번호를 입력하세요. 이 폰에 저장되어 다음부터는 묻지 않습니다.';
+    for (;;) {
+      if (!pw) pw = await askPw(msg);
+      try { const s = await decrypt(blob, pw); SS('snap_pw', pw); s._offline = !online; return s }
+      catch (e) { pw = null; SS('snap_pw', null); msg = '비밀번호가 맞지 않습니다. 다시 입력하세요.' }
+    }
+  })();
+  const realFetch = window.fetch.bind(window);
+  window.fetch = async (url, opt) => {
+    const u = String(url);
+    if (u.startsWith('/api/')) {
+      const s = await window.SNAP_READY;
+      let body = { ok: false, msg: '폰에서는 읽기 전용입니다' };
+      if (u.startsWith('/api/state')) body = Object.assign({}, s.state, { snap_generated: s.generated, snap_offline: s._offline });
+      else if (u.startsWith('/api/backtest')) { const p = (u.split('p=')[1] || 'ALL'); body = s.bt[p] || s.bt.ALL }
+      return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
+    }
+    return realFetch(url, opt);
+  };
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+})();
+</script>
+
+<script>
+const TABS=[['today','오늘'],['week','주간 기준선'],['sim','시뮬 A'],['bt','백테스트'],['log','실거래 기록'],['submit','주간 제출']].filter(t=>!(window.SNAP_MODE&&(t[0]==='log'||t[0]==='submit')));
+let S=null, tab=(()=>{try{return localStorage.getItem('tab')||'today'}catch(e){return 'today'}})();
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtR=x=>x==null?'':`<span class="${x>0?'pos':x<0?'neg':''}">${x>0?'+':''}${x}R</span>`;
+const dirK=d=>d==='long'?'롱':'숏';
+const usd=x=>x==null?'':'$'+Number(x).toLocaleString('en-US',{maximumFractionDigits:2});
+function nav(){ $('#nav').innerHTML=TABS.map(([k,v])=>`<button class="${k===tab?'on':''}" onclick="go('${k}')">${v}</button>`).join(''); }
+function go(k){tab=k;try{localStorage.setItem('tab',k)}catch(e){};nav();render()}
+async function load(){
+  const r=await fetch('/api/state'); S=await r.json();
+  if(S.error){$('#main').innerHTML=`<div class="err">${esc(S.error)}<pre>${esc(S.trace)}</pre></div>`;return}
+  $('#stamp').textContent=`오늘 ${S.today}`; nav(); render();
+}
+async function saveJ(){
+  const r=await fetch('/api/journal',{method:'POST',body:JSON.stringify(S.journal)});
+  if(!r.ok){alert('저장 실패');return}
+  await load();
+}
+async function doUpdate(btn){btn.disabled=true;btn.textContent='업데이트 중…';await fetch('/api/update',{method:'POST'});await load()}
+function errs(){
+  if(window.SNAP_MODE) return `<div class="card row" style="align-items:center"><span>PC 사본 <b>${esc(S.snap_generated||'')}</b> · 데이터 <b>${S.last_data||'-'}</b></span>${S.snap_offline?'<small class="warn">오프라인: 마지막으로 받은 사본</small>':''}<small>읽기 전용</small></div>`;
+  const P=S.publish||{};
+  return `<div class="card row" style="align-items:center"><span>데이터 마지막 날짜 <b class="${S.stale?'neg':''}">${S.last_data||'-'}</b>${S.stale?' — 오래됨: Norgate(NDU)가 켜져 있는지 확인 후 업데이트':''}</span><button class="b" onclick="doUpdate(this)">Norgate 데이터 업데이트</button><small>${esc(S.update_msg)}</small>${P.configured?`<button class="b" onclick="doPublish(this)">폰으로 보내기</button><small>${esc(P.msg)}${P.url?' · <a href="'+esc(P.url)+'" target="_blank">'+esc(P.url)+'</a>':''}</small>`:''}</div>`+(S.errors.length?`<div class="err">${S.errors.map(esc).join('<br>')}<br>config.json의 data_folder를 확인하세요. 현재: ${esc(S.data_folder)}</div>`:'')}
+async function doPublish(btn){btn.disabled=true;btn.textContent='올리는 중…';await fetch('/api/publish',{method:'POST'});await load()}
+async function savePub(){const v=id=>document.getElementById(id).value.trim();await fetch('/api/publish_config',{method:'POST',body:JSON.stringify({owner:v('po'),repo:v('pr'),token:v('pt'),password:v('pp')})});await load();}
+function head(){
+  return `<div class="card row">
+   <div class="kpi"><b>${usd(S.equity)}</b><span>${S.month} R 기준 잔고 (${esc(S.equity_src)})</span></div>
+   <div class="kpi"><b>${usd(S.R_dollar)}</b><span>이번 달 1R (한 달 고정)</span></div>
+   <div class="kpi"><b class="${S.cap_hit?'neg':''}">${usd(S.month_realized)} / -${usd(S.month_cap)}</b><span>이번 달 청산손익 / 월 손절 한도${S.cap_hit?' — 한도 도달: 이번 달 신규 진입 중지':''}</span></div>
+   <div class="kpi"><b class="${S.sim_stats.halt?'neg':''}">${S.sim_stats.dd}R · ${S.sim_stats.three_year}R</b><span>시뮬 A 낙폭 / 최근 3년 합계 (중단: 35R 초과 또는 −15R 이하)</span></div>
+  </div>`;
+}
+function render(){
+  if(!S)return; const m=$('#main');
+  if(tab==='today') m.innerHTML=errs()+head()+today();
+  if(tab==='week') m.innerHTML=errs()+week();
+  if(tab==='sim') m.innerHTML=errs()+sim();
+  if(tab==='log') m.innerHTML=errs()+logv();
+  if(tab==='submit') m.innerHTML=errs()+submit();
+  if(tab==='bt') btView();
+}
+function today(){
+  const rows=S.products.map(p=>{
+    const sig=p.signal?`<span class="sig">${dirK(p.signal.dir)} ${p.signal.kind}</span><br><small>다음 거래일 시가 진입 · 1R ${p.signal.R_price}<br>${p.role==='live'?(p.signal.contracts.length?'실거래: '+p.signal.contracts.join(' + '):'실거래: 0계약 (시뮬 A만)'):'시뮬 A만'}</small>`:'<span class="mute">없음</span>';
+    const o=p.open;
+    const sim=o?`${dirK(o.dir)} ${o.d0} @${o.entry}<br>${fmtR(o.gain_R)} · 스탑 <b>${o.stop}</b><br><small>${o.phase?'트레일 중 (최고 종가 '+o.best+')':'+2R 종가 '+o.trail_start_close+' 이후 트레일'}${o.add?'<br>섀도 추가 '+o.add_d+' @'+o.add+(o.add_open?' · 추가분 스탑 '+o.add_stop:''):''}${o.add_tomorrow?'<br><span class="sig">+2R 도달 → 피라미딩 O/X 판단</span>':''}</small>`:'<span class="mute">없음</span>';
+    const live=(p.live||[]).map(v=>v.warn?`<small class="warn">${esc(v.warn)}</small>`:`${fmtR(v.gain_R)} · 스탑 <b>${v.stop??'?'}</b><br><small>${v.phase?'트레일 (최고 '+v.best_close+')':'+2R 종가 '+v.trail_start_close}${v.stopped_in_data?'<br><span class="neg">데이터상 '+v.stopped_day+' 스탑 도달 — 청산 기록 확인</span>':''}</small>`).join('<hr>')||'<span class="mute">없음</span>';
+    return `<tr><td><b>${esc(p.name)}</b> ${p.p}<br><span class="tag">${p.role==='live'?'실거래':'시뮬 A'}</span>${p.long_only?' <span class="tag">롱 온리</span>':''}${p.short_blocked&&!p.long_only?' <span class="tag">금 숏 불가(200MA 상승)</span>':''}</td>
+     <td>${p.close}<br><small>${p.last_date}</small></td><td>${sig}</td>
+     <td>${p.hi55}<br>${p.lo55}</td><td>${p.R_price}<br><small>${Object.entries(p.one_contract_R).map(([k,v])=>k+' '+usd(v)).join('<br>')}</small></td>
+     <td>${p.contracts.length?p.contracts.join(' + '):'<span class="warn">0계약</span>'}</td><td>${sim}</td><td>${live}</td></tr>`}).join('');
+  return `<div class="card wrap"><table><tr><th>상품</th><th>종가</th><th>신호</th><th>55일 종가<br>고 / 저</th><th>1R(가격)<br>계약 1개당</th><th>현재 R 계약</th><th>시뮬 A 포지션</th><th>실거래 참고 스탑</th></tr>${rows}</table></div>
+  <div class="card"><small>신호와 스탑은 Norgate 연결선물 종가로 계산한 참고값입니다. 판정은 삼성 HTS 일봉으로 합니다. 실거래 스탑의 트레일 구간은 최고 종가 − 2R, 그 전에는 입력한 초기 스탑입니다.</small></div>`;
+}
+function week(){
+  const rows=S.products.map(p=>{
+    const th=p.thresholds.map(t=>`<td>${t.hi}<br>${p.short_blocked?'<span class="mute">숏 없음</span>':t.lo}</td>`).join('');
+    const o=p.open, re=p.reentry;
+    let extra='';
+    if(o) extra=`보유 ${dirK(o.dir)} · 스탑 <b>${o.stop}</b> · ${o.phase?'트레일: 새 최고 종가 − '+o.R_price*2:'+2R 종가 '+o.trail_start_close}`;
+    else if(re) extra=`재진입 기준: 종가가 ${re.level} ${re.dir==='long'?'위':'아래'}면 ${dirK(re.dir)}`;
+    return `<tr><td><b>${esc(p.name)}</b> ${p.p}</td>${o?'<td colspan="5" class="mute">포지션 보유 중 — 돌파 신호 없음</td>':th}<td>${extra}</td></tr>`}).join('');
+  return `<div class="card wrap"><h3>앞으로 5거래일 신호 기준 (종가 기준, 위: 롱 / 아래: 숏)</h3>
+  <table><tr><th>상품</th><th>1일차</th><th>2일차</th><th>3일차</th><th>4일차</th><th>5일차</th><th>보유·재진입</th></tr>${rows}</table>
+  <p><small>그 주에 신호가 나오지 않는다는 전제의 값입니다. 55일 창에서 오래된 종가가 빠지는 날 기준이 바뀝니다. 평일에는 HTS 종가가 이 선을 넘었는지만 보면 됩니다.</small></p></div>`;
+}
+function lineChart(c,label,daily){const W=1000,H=240,pad=34; if(c.length<2)return'<small class="mute">그래프를 그릴 거래가 부족합니다</small>';
+  const ys=c.map(x=>x[1]), mn=Math.min(0,...ys), mx=Math.max(1,...ys), sx=i=>pad+i*(W-pad*2)/(c.length-1), sy=v=>H-pad-(v-mn)*(H-pad*2)/(mx-mn||1);
+  const path=c.map((x,i)=>(i?'L':'M')+sx(i).toFixed(1)+' '+sy(x[1]).toFixed(1)).join('');
+  let pk=-1e9; const dd=c.map((x,i)=>{pk=Math.max(pk,x[1]);return [sx(i),sy(pk),sy(x[1])]});
+  const area='M'+dd.map(d=>d[0].toFixed(1)+' '+d[1].toFixed(1)).join('L')+'L'+dd.slice().reverse().map(d=>d[0].toFixed(1)+' '+d[2].toFixed(1)).join('L')+'Z';
+  const span=c.length/12, step=span>30?5:span>12?2:1;
+  const ticks=daily?c.map((x,i)=>[x[0],i]).filter(([k,i])=>i>0&&k.slice(0,7)!==c[i-1][0].slice(0,7)).map(([k,i])=>`<line x1="${sx(i)}" x2="${sx(i)}" y1="${pad}" y2="${H-pad}" stroke="var(--line)"/><text x="${sx(i)}" y="${H-12}" font-size="11" text-anchor="middle" fill="var(--mute)">${+k.slice(5,7)}월</text>`).join('')
+   :c.map((x,i)=>[x[0],i]).filter(([k])=>k.endsWith('-01')&&(+k.slice(0,4))%step===0).map(([k,i])=>`<line x1="${sx(i)}" x2="${sx(i)}" y1="${pad}" y2="${H-pad}" stroke="var(--line)"/><text x="${sx(i)}" y="${H-12}" font-size="11" text-anchor="middle" fill="var(--mute)">${k.slice(0,4)}</text>`).join('');
+  const raw=(mx-mn)/4, e10=Math.pow(10,Math.floor(Math.log10(raw||1))), stp=[1,2,5,10].map(k=>k*e10).find(k=>k>=raw);
+  const lv=[]; for(let v=Math.ceil(mn/stp)*stp; v<=mx; v+=stp) lv.push(+v.toFixed(6));
+  const gl=lv.map(v=>`<line x1="${pad}" x2="${W-pad}" y1="${sy(v)}" y2="${sy(v)}" stroke="var(--line)"/><text x="${pad-4}" y="${sy(v)+4}" font-size="11" text-anchor="end" fill="var(--mute)">${v}R</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${gl}${ticks}<path d="${area}" fill="var(--neg)" opacity=".18"/><path d="${path}" fill="none" stroke="var(--acc)" stroke-width="1.8"/></svg><small>${label}</small>`}
+let simY='ALL', simLogY=null, simLogP='ALL';
+function simStats(T){
+  const c=T.filter(t=>!t.open).sort((a,b)=>a.d1<b.d1?-1:1), R=c.map(t=>t.R), n=R.length, tot=R.reduce((a,b)=>a+b,0);
+  let cum=0,pk=0,dd=0,run=0,mx=0; for(const r of R){cum+=r;pk=Math.max(pk,cum);dd=Math.max(dd,pk-cum);run=r<0?run+1:0;mx=Math.max(mx,run)}
+  const adds=c.filter(t=>t.add_R!=null), byP={};
+  c.forEach(t=>{byP[t.name]=(byP[t.name]||0)+t.R});
+  return {n,tot,avg:n?tot/n:0,win:n?Math.round(100*R.filter(r=>r>0).length/n):0,dd,mx,big:R.filter(r=>r>=5).length,
+    add:adds.reduce((a,t)=>a+t.add_R,0),addn:adds.length,byP,c};
+}
+const r1=x=>Math.round(x*10)/10;
+function sim(){
+  const st=S.sim_stats, A=S.sim_all||[], years=[...new Set(A.filter(t=>!t.open).map(t=>t.d1.slice(0,4)))].sort().reverse();
+  if(simLogY===null) simLogY=years[0]||'ALL';
+  const inY=(t,y)=>y==='ALL'||(t.open?S.today.slice(0,4)===y:t.d1.slice(0,4)===y);
+  const sel=A.filter(t=>!t.open&&inY(t,simY)), s=simStats(sel);
+  const yopt=(v)=>`<option value="ALL" ${v==='ALL'?'selected':''}>전체</option>`+years.map(y=>`<option ${v===y?'selected':''}>${y}</option>`).join('');
+  const kpi=(v,l)=>`<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
+  const byP=Object.entries(s.byP).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${esc(k)} ${fmtR(r1(v))}`).join(' · ');
+  const prods=[...new Set(A.map(t=>t.name))];
+  const log=A.filter(t=>inY(t,simLogY)&&(simLogP==='ALL'||t.name===simLogP)).slice().sort((a,b)=>(a.open?'9':a.d1)<(b.open?'9':b.d1)?1:-1);
+  const rows=log.map(t=>`<tr><td>${esc(t.name)}${t.role==='live'?'':' <span class="tag">시뮬 전용</span>'}</td><td>${dirK(t.dir)}</td><td>${t.kind}</td><td>${t.d0}</td><td>${t.open?'<span class="tag">보유</span>':t.d1}</td><td>${t.entry}</td><td>${t.open?'스탑 '+t.stop:t.exit}</td><td>${t.R_price}</td><td>${t.open?fmtR(t.open_R)+' <small>평가</small>':fmtR(t.R)}</td><td>${t.add?t.add_d+' '+(t.add_open?fmtR(t.open_add_R)+' <small>평가</small>':fmtR(t.add_R)):''}</td></tr>`).join('');
+  const ls=simStats(log.filter(t=>!t.open));
+  // 누적 곡선: 전체는 월 단위, 연도 선택은 거래 단위
+  let cv=[]; if(simY==='ALL'){const m={};s.c.forEach(t=>{const k=t.d1.slice(0,7);m[k]=(m[k]||0)+t.R});const ks=Object.keys(m).sort();if(ks.length){let [y,mo]=ks[0].split('-').map(Number),cum=0;const end=ks[ks.length-1];while(true){const k=y+'-'+String(mo).padStart(2,'0');cum+=m[k]||0;cv.push([k,r1(cum)]);if(k>=end)break;mo++;if(mo>12){mo=1;y++}}}}
+  else{let cum=0;cv=[[simY+'-01-01',0]];s.c.forEach(t=>{cum+=t.R;cv.push([t.d1,r1(cum)])})}
+  const opens=A.filter(t=>t.open).map(t=>{const p=S.products.find(x=>x.name===t.name)||{};const dr=t.dir==='long'?1:-1;const lock=(t.stop-t.entry)*dr/t.R_price;
+    return `<tr><td><b>${esc(t.name)}</b> ${dirK(t.dir)}<br><small>${t.d0} @${t.entry}</small></td><td>${p.close??''}<br><small>${p.last_date??''}</small></td><td>${fmtR(t.open_R)}</td><td>${t.stop}<br><small>확보 ${fmtR(r1(lock))}<br>${t.phase?'트레일 중':'+2R 종가 '+t.trail_start_close+' 전'}${t.add?'<br>섀도 추가 '+(t.add_open?fmtR(t.open_add_R):'청산'):''}${t.add_tomorrow?'<br><span class="sig">피라미딩 O/X 판단</span>':''}</small></td></tr>`}).join('');
+  const openR=A.filter(t=>t.open).reduce((a,t)=>a+t.open_R,0);
+  return `<div class="row" style="align-items:stretch"><div class="card" style="flex:2;min-width:min(420px,100%)"><h3>시뮬 A 성과 <select onchange="simY=this.value;render()">${yopt(simY)}</select> <small>(모든 상품·모든 신호, 청산일 기준)</small></h3>
+   ${lineChart(cv,(simY==='ALL'?'전체':simY+'년')+' 누적 R (청산 기준). 빨간 영역은 고점 대비 낙폭.',simY!=='ALL')}</div>
+   <div class="card wrap" style="flex:1;min-width:min(300px,100%)"><h3>현재 보유 포지션 <small>${A.filter(t=>t.open).length}건 · 평가 ${fmtR(r1(openR))}</small></h3>
+   <table><tr><th>상품·진입</th><th>종가</th><th>평가</th><th>스탑</th></tr>${opens||'<tr><td colspan=4 class="mute">없음</td></tr>'}</table>
+   <p><small>확보 = 지금 스탑에 걸렸을 때의 R</small></p></div></div>
+  <div class="card"><div class="row">
+   ${kpi(s.n+'건','거래 수 · 승률 '+s.win+'%')}${kpi(fmtR(r1(s.tot)),'R 합계 · 거래당 '+(s.avg>0?'+':'')+s.avg.toFixed(2)+'R')}
+   ${kpi(r1(s.dd)+'R','기간 내 최대 낙폭')}${kpi(s.mx+'연패','기간 내 최장 연패')}${kpi(s.big+'건','5R 이상')}
+   ${kpi(fmtR(r1(s.add)),'섀도 피라미딩 '+s.addn+'건')}</div><p><small>상품별: ${byP||'-'}</small></p></div>
+  <div class="card row">
+   <div class="kpi"><b>${st.n}건 · ${fmtR(st.total)}</b><span>${S.sim_start} 이후 (실시간 기록 구간)</span></div>
+   <div class="kpi"><b>${st.dd}R</b><span>최대 낙폭 (중단 35R 초과)</span></div>
+   <div class="kpi"><b>${fmtR(st.three_year)}</b><span>최근 3년 (중단 −15R 이하)</span></div>
+   <div class="kpi"><b>${st.losing_streak}연패</b><span>현재 연속 손실</span></div>
+   <div class="kpi"><b class="${st.halt?'neg':'pos'}">${st.halt?'중단 기준 도달':'정상 범위'}</b><span>중단 기준 상태</span></div></div>
+  <div class="card wrap"><h3>거래 기록 <select onchange="simLogY=this.value;render()">${yopt(simLogY)}</select> <select onchange="simLogP=this.value;render()"><option value="ALL">전체 상품</option>${prods.map(p=>`<option ${simLogP===p?'selected':''}>${esc(p)}</option>`).join('')}</select>
+   <small>${ls.n}건 · ${fmtR(r1(ls.tot))}${log.some(t=>t.open)?' · 보유 '+log.filter(t=>t.open).length+'건':''}</small></h3>
+   <table><tr><th>상품</th><th>방향</th><th>신호</th><th>진입일</th><th>청산일</th><th>진입가</th><th>청산가</th><th>1R</th><th>R</th><th>섀도 추가</th></tr>${rows||'<tr><td colspan=10 class="mute">없음</td></tr>'}</table>
+   <p><small>모든 신호를 기계적으로 적용(0계약 신호, 시뮬 전용 상품 포함). 1R 고정, 표준계약 수수료만 반영. 보유 중 거래는 올해에 표시. 가격은 백어저스트 연결선물 기준.</small></p></div>`;
+}
+
+let BTC={}, BTsel=null;
+function btPick(p){BTsel=(BTsel===p?null:p);btView();window.scrollTo(0,0)}
+async function btView(){
+  const m=$('#main'), key=(BTsel||'ALL')+'|'+S.last_data;
+  if(!BTC[key]){m.innerHTML=errs()+'<div class="card">백테스트 계산 중…</div>';const r=await fetch('/api/backtest'+(BTsel?'?p='+BTsel:''));BTC[key]=await r.json();if(tab!=='bt')return}
+  const B=BTC[key];
+  if(B.error){m.innerHTML=`<div class="err">${esc(B.error)}<pre>${esc(B.trace)}</pre></div>`;return}
+  const names=Object.fromEntries(S.products.map(p=>[p.p,p.name]));
+  const kpi=(v,l)=>`<div class="kpi"><b>${v}</b><span>${l}</span></div>`;
+  const curve=()=>{const c=B.curve, W=1000,H=220,pad=34; if(c.length<2)return'';
+    const ys=c.map(x=>x[1]), mn=Math.min(0,...ys), mx=Math.max(1,...ys), sx=i=>pad+i*(W-pad*2)/(c.length-1), sy=v=>H-pad-(v-mn)*(H-pad*2)/(mx-mn||1);
+    const path=c.map((x,i)=>(i?'L':'M')+sx(i).toFixed(1)+' '+sy(x[1]).toFixed(1)).join('');
+    let pk=-1e9; const dd=c.map((x,i)=>{pk=Math.max(pk,x[1]);return [sx(i),sy(pk),sy(x[1])]});
+    const area='M'+dd.map(d=>d[0].toFixed(1)+' '+d[1].toFixed(1)).join('L')+'L'+dd.slice().reverse().map(d=>d[0].toFixed(1)+' '+d[2].toFixed(1)).join('L')+'Z';
+    const span=c.length/12, step=span>30?5:span>12?2:1;
+    const ticks=c.map((x,i)=>[x[0],i]).filter(([k])=>k.endsWith('-01')&&(+k.slice(0,4))%step===0).map(([k,i])=>`<line x1="${sx(i)}" x2="${sx(i)}" y1="${pad}" y2="${H-pad}" stroke="var(--line)"/><text x="${sx(i)}" y="${H-12}" font-size="11" text-anchor="middle" fill="var(--mute)">${k.slice(0,4)}</text>`).join('');
+    const raw=(mx-mn)/4, e10=Math.pow(10,Math.floor(Math.log10(raw||1))), stp=[1,2,5,10].map(k=>k*e10).find(k=>k>=raw);
+    const lv=[]; for(let v=Math.ceil(mn/stp)*stp; v<=mx; v+=stp) lv.push(+v.toFixed(6));
+    const gl=lv.map(v=>`<line x1="${pad}" x2="${W-pad}" y1="${sy(v)}" y2="${sy(v)}" stroke="var(--line)"/><text x="${pad-4}" y="${sy(v)+4}" font-size="11" text-anchor="end" fill="var(--mute)">${v}R</text>`).join('');
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">${gl}${ticks}<path d="${area}" fill="var(--neg)" opacity=".18"/><path d="${path}" fill="none" stroke="var(--acc)" stroke-width="1.8"/></svg><small>${B.sel?esc(B.sel_name)+' ':''}누적 R (청산월 기준). 빨간 영역은 고점 대비 낙폭.</small>`};
+  const yr=B.years.slice().reverse().map(y=>`<tr><td>${y.year}</td><td>${fmtR(y.total)}</td><td>${y.n}</td><td>${y.big||''}</td>${B.sel?'':B.products.map(p=>`<td>${y.prod[p]!=null?fmtR(y.prod[p]):''}</td>`).join('')}<td>${y.add?fmtR(y.add):''}</td></tr>`).join('');
+  const pr=B.prod.map(p=>`<tr onclick="btPick('${p.p}')" style="cursor:pointer;${B.sel===p.p?'background:var(--chip);font-weight:600':''}"><td>${esc(p.name)} ${p.p} <span class="mute">›</span></td><td>${p.n}</td><td>${fmtR(p.total)}</td><td>${fmtR(p.avg)}</td><td>${p.win}%</td><td>${p.big}</td></tr>`).join('');
+  const dec=B.decades.map(d=>`<tr><td>${d.k}</td><td>${fmtR(d.total)}</td></tr>`).join('');
+  const rec=B.recent.map(t=>`<tr><td>${esc(t.name)}</td><td>${dirK(t.dir)}</td><td>${t.kind==='reentry'?'재진입':'돌파'}</td><td>${t.d0}</td><td>${t.d1}</td><td>${fmtR(t.R)}</td><td>${t.add_R!=null?fmtR(t.add_R):''}</td></tr>`).join('');
+  const op=B.open.map(t=>`${esc(t.name)} ${dirK(t.dir)} ${t.d0} ${fmtR(t.R)}`).join(' · ')||'없음';
+  const split=B.sel?`<div class="card wrap" style="flex:1;min-width:min(280px,100%)"><h3>방향·신호별</h3><table><tr><th></th><th>건수</th><th>합계</th><th>평균</th><th>승률</th></tr>${B.split.map(x=>`<tr><td>${x.k}</td><td>${x.n}</td><td>${x.n?fmtR(x.total):''}</td><td>${x.avg!=null?fmtR(x.avg):''}</td><td>${x.win!=null?x.win+'%':''}</td></tr>`).join('')}</table><p><small>이긴 거래 평균 ${fmtR(B.avg_win)} · 진 거래 평균 ${fmtR(B.avg_loss)}</small></p></div>`:'';
+  const top=B.sel?`<div class="card wrap"><h3>${esc(B.sel_name)} 최대 거래 10건 <small>(가격은 백어저스트 연결선물 기준이라 당시 실제 가격과 다름)</small></h3><table><tr><th>방향</th><th>진입</th><th>청산</th><th>진입가</th><th>청산가</th><th>R</th></tr>${B.top.map(t=>`<tr><td>${dirK(t.dir)}</td><td>${t.d0}</td><td>${t.d1}</td><td>${t.entry}</td><td>${t.exit}</td><td>${fmtR(t.R)}</td></tr>`).join('')}</table></div>`:'';
+  const title=B.sel?`${esc(B.sel_name)} ${B.sel} 상세 <button class="b" onclick="btPick('${B.sel}')">전체 보기</button>`:`백테스트 ${B.start.slice(0,4)}–${B.last} <small>(${B.products.map(p=>names[p]||p).join('·')}, 데이터 업데이트 때마다 자동 재계산)</small>`;
+  m.innerHTML=errs()+`<div class="card"><h3>${title}</h3><div class="row">
+   ${kpi(B.n+'건',`거래 수 · 승률 ${B.win}%`)}${kpi(fmtR(B.total),`총 R · 거래당 ${B.avg>0?'+':''}${B.avg}R (표준편차 ${B.sd})`)}
+   ${kpi(B.dd+'R',`최대 낙폭 (${B.dd_end||'-'} 저점)`)}${kpi(B.uw+'개월','최장 수면 아래')}
+   ${kpi(B.loss_years+'/'+B.n_years+'년',`손실 연도 · 최악 ${B.worst_year?B.worst_year[0]+'R('+B.worst_year[1]+')':'-'}`)}${kpi((B.worst3[0]??'-')+'R',`최악 3년 (${B.worst3[1]||'-'} 시작)`)}
+   ${kpi(B.streak+'연패','최장 연패')}${kpi(B.big+'건',B.big_share!=null?`5R 이상 · 합계가 총 R의 ${B.big_share}%`:'5R 이상')}</div>
+   <div class="row" style="margin-top:10px">${kpi(B.cur_dd+'R','현재 고점 대비')}${kpi(B.cur_uw+'개월','현재 수면 아래')}${kpi(B.cur_streak+'연패','현재 연패')}
+   ${kpi(fmtR(B.adds.total),`섀도 피라미딩 ${B.adds.n}건 · 승률 ${B.adds.win}%`)}${kpi(fmtR(B.reentry.total),`재진입 ${B.reentry.n}건`)}</div></div>
+  <div class="card">${curve()}</div>
+  <div class="row" style="align-items:flex-start"><div class="card wrap" style="flex:2;min-width:min(320px,100%)"><h3>상품별 <small>(누르면 상세)</small></h3><table><tr><th>상품</th><th>건수</th><th>합계</th><th>평균</th><th>승률</th><th>5R+</th></tr>${pr}</table></div>
+   ${split}<div class="card" style="flex:1;min-width:min(200px,100%)"><h3>10년 단위</h3><table>${dec}</table></div></div>
+  ${top}
+  <div class="card wrap"><h3>연도별 (청산일 기준)</h3><table><tr><th>연도</th><th>합계</th><th>거래</th><th>5R+</th>${B.sel?'':B.products.map(p=>`<th>${esc(names[p]||p)}</th>`).join('')}<th>섀도 추가</th></tr>${yr}</table></div>
+  <div class="card wrap"><h3>최근 청산 15건</h3><table><tr><th>상품</th><th>방향</th><th>신호</th><th>진입</th><th>청산</th><th>R</th><th>섀도 추가</th></tr>${rec}</table><p><small>보유 중(집계 제외): ${op}</small></p>
+   <p><small>규칙은 실거래·시뮬 A와 같은 엔진. 1R 고정, 표준계약 수수료만 반영, 슬리피지·롤 비용 없음, 피라미딩 없음(섀도 추가는 따로 표시). 상품별 데이터 시작 시점부터 집계.</small></p></div>`;
+}
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+function val(id){return document.getElementById(id).value.trim()}
+function addBalance(){S.journal.balances=S.journal.balances.filter(b=>b.month!==val('bm'));S.journal.balances.push({month:val('bm'),usd:val('bu')});saveJ()}
+function addCash(){S.journal.cashflows.push({id:uid(),date:val('cd'),kind:val('ck'),usd:val('cu'),memo:val('cm')});saveJ()}
+function addNote(){S.journal.notes.push({id:uid(),date:val('nd'),tag:val('nt'),text:val('nx')});saveJ()}
+function prefill(){
+  const p=S.products.find(x=>x.p===val('tp')); if(!p)return;
+  const s=p.signal||{}; if(p.open){document.getElementById('tr').value=p.open.R_price;document.getElementById('td').value=p.open.dir;}
+  else if(s.R_price){document.getElementById('tr').value=s.R_price;document.getElementById('td').value=s.dir;}
+}
+function addTrade(){
+  const t={id:uid(),product:val('tp'),dir:val('td'),signal_date:val('tsd'),entry_date:val('ted'),entry_price:val('tep'),contracts:val('tc'),R_price:val('tr'),stop_init:val('ts'),R_dollar:val('trd'),memo:val('tm')};
+  if(!t.product||!t.entry_date){alert('상품과 진입일은 필수');return}
+  S.journal.trades.push(t);saveJ()
+}
+function editTrade(id,field){
+  const t=S.journal.trades.find(x=>x.id===id); const v=prompt(field+' 입력',t[field]||''); if(v===null)return; t[field]=v.trim(); saveJ();
+}
+function pyr(id){
+  const t=S.journal.trades.find(x=>x.id===id);
+  const d=prompt('피라미딩 판단: O 또는 X',t.pyramid?.decision||''); if(d===null)return;
+  const memo=prompt('판단 이유 (결과를 알기 전에 적기)',t.pyramid?.memo||'')??'';
+  t.pyramid={decision:d.trim().toUpperCase(),memo,date:S.today}; saveJ();
+}
+function closeTrade(id){
+  const t=S.journal.trades.find(x=>x.id===id);
+  const d=prompt('청산일 (YYYY-MM-DD)',t.exit_date||S.today); if(d===null)return;
+  const px=prompt('청산가',t.exit_price||'')??''; const pnl=prompt('청산손익 USD (수수료 포함, 손실은 -)',t.pnl_usd||'')??'';
+  Object.assign(t,{exit_date:d.trim(),exit_price:px.trim(),pnl_usd:pnl.trim()}); saveJ();
+}
+function del(kind,id){ if(!confirm('삭제할까요?'))return; S.journal[kind]=S.journal[kind].filter(x=>(x.id||x.month)!==id); saveJ(); }
+function logv(){
+  const J=S.journal, opts=S.products.map(p=>`<option value="${p.p}">${esc(p.name)} ${p.p}</option>`).join('');
+  const tr=J.trades.slice().reverse().map(t=>{const R=(t.pnl_usd&&t.R_dollar)?(t.pnl_usd/t.R_dollar).toFixed(2):'';return `<tr><td>${t.product}</td><td>${dirK(t.dir)}</td><td>${t.entry_date}</td><td>${esc(t.entry_price)}</td><td>${esc(t.contracts)}</td><td>${esc(t.stop_init)} <a href="#" onclick="editTrade('${t.id}','stop_init');return false">수정</a></td>
+   <td>${t.pyramid?esc(t.pyramid.decision)+' <small>'+esc(t.pyramid.memo)+'</small>':''} <a href="#" onclick="pyr('${t.id}');return false">판단</a></td>
+   <td>${t.exit_date?t.exit_date+' @'+esc(t.exit_price):'<a href="#" onclick="closeTrade(\''+t.id+'\');return false">청산 입력</a>'}</td><td>${t.pnl_usd?usd(t.pnl_usd):''}${R?' ('+fmtR(+R)+')':''}</td><td><small>${esc(t.memo)}</small></td><td><a href="#" onclick="del('trades','${t.id}');return false">삭제</a></td></tr>`}).join('');
+  const miss=S.missing.map(x=>`<li>${x.p} ${dirK(x.dir)} ${x.d0} — ${x.reason}</li>`).join('');
+  return `<div class="card"><h3>거래 입력</h3><div class="form">
+   <label>상품<select id="tp" onchange="prefill()">${opts}</select></label>
+   <label>방향<select id="td"><option value="long">롱</option><option value="short">숏</option></select></label>
+   <label>신호일<input id="tsd" type="date"></label><label>진입일<input id="ted" type="date"></label>
+   <label>진입 체결가<input id="tep"></label><label>계약 (예: M6E 1)<input id="tc"></label>
+   <label>1R (가격, 1.5ATR)<input id="tr"></label><label>초기 스탑 가격<input id="ts"></label>
+   <label>R 금액 USD<input id="trd" value="${S.R_dollar}"></label><label>메모<input id="tm"></label>
+   <button class="b p" onclick="addTrade()">추가</button></div>
+   <p><small>상품을 고르면 오늘 신호(또는 시뮬 포지션)의 1R과 방향을 채웁니다. 롤오버는 같은 거래로 두고 초기 스탑만 새 월물 가격으로 수정하세요.</small></p></div>
+  <div class="card wrap"><h3>거래 기록</h3><table><tr><th>상품</th><th>방향</th><th>진입일</th><th>진입가</th><th>계약</th><th>초기 스탑</th><th>피라미딩</th><th>청산</th><th>손익</th><th>메모</th><th></th></tr>${tr||'<tr><td colspan=11 class="mute">없음</td></tr>'}</table></div>
+  <div class="card"><h3>시뮬 A와 대조 (${S.live_start} 이후 실거래 상품)</h3>${miss?'<ul>'+miss+'</ul>':'<span class="mute">어긋난 신호 없음</span>'}</div>
+  <div class="card"><h3>월초 확정 잔고 (R 기준)</h3><div class="form"><label>월<input id="bm" value="${S.month}"></label><label>잔고 USD (평가손익 제외)<input id="bu"></label><button class="b p" onclick="addBalance()">저장</button></div>
+   <p>${J.balances.slice().sort((a,b)=>b.month.localeCompare(a.month)).map(b=>`${b.month}: ${usd(b.usd)} <a href="#" onclick="del('balances','${b.month}');return false">삭제</a>`).join(' · ')||'<span class="mute">없음</span>'}</p></div>
+  <div class="card"><h3>입출금 (매월 첫 영업일만)</h3><div class="form"><label>날짜<input id="cd" type="date"></label><label>구분<select id="ck"><option value="deposit">입금</option><option value="withdraw">출금</option></select></label><label>USD<input id="cu"></label><label>메모<input id="cm"></label><button class="b p" onclick="addCash()">추가</button></div>
+   <p>${J.cashflows.slice().reverse().map(c=>`${c.date} ${c.kind==='deposit'?'입금':'출금'} ${usd(c.usd)} <small>${esc(c.memo)}</small> <a href="#" onclick="del('cashflows','${c.id}');return false">삭제</a>`).join('<br>')||'<span class="mute">없음</span>'}</p></div>
+  <div class="card"><h3>재량 메모</h3><div class="form"><label>날짜<input id="nd" type="date" value="${S.today}"></label><label>구분<select id="nt"><option>엔 디나이 추적</option><option>피라미딩</option><option>규칙 개정 아이디어</option><option>기타</option></select></label><label style="grid-column:span 2">내용 (결과를 알기 전에)<input id="nx"></label><button class="b p" onclick="addNote()">추가</button></div>
+   <p>${J.notes.slice().reverse().map(n=>`${n.date} <span class="tag">${esc(n.tag)}</span> ${esc(n.text)} <a href="#" onclick="del('notes','${n.id}');return false">삭제</a>`).join('<br>')||'<span class="mute">없음</span>'}</p></div>
+  <div class="card"><h3>폰 공유 설정 <small>(GitHub Pages)</small></h3>${(()=>{const P=S.publish||{};return `<div class="form">
+   <label>GitHub 아이디<input id="po" value="${esc(P.owner)}"></label><label>저장소 이름<input id="pr" value="${esc(P.repo)}"></label>
+   <label>토큰 ${P.has_token?'(저장됨, 바꿀 때만 입력)':''}<input id="pt" type="password" autocomplete="off"></label>
+   <label>폰 비밀번호 ${P.has_password?'(저장됨, 바꿀 때만 입력)':''}<input id="pp" type="password" autocomplete="new-password"></label>
+   <button class="b p" onclick="savePub()">저장</button></div>
+   <p><small>${P.configured?'설정 완료. 앱을 켜거나 데이터를 업데이트할 때마다 자동으로 올라갑니다. 폰 링크: <a href="'+esc(P.url)+'" target="_blank">'+esc(P.url)+'</a>':'아직 설정 안 됨'}<br>토큰과 비밀번호는 이 PC의 publish_config.json에만 저장되고 GitHub에는 암호화된 데이터만 올라갑니다.</small></p>`})()}</div>`;
+}
+const iso=x=>x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');
+function monday(d){const x=new Date(d+'T00:00:00');const k=(x.getDay()+6)%7;x.setDate(x.getDate()-k);return iso(x)}
+function addDays(d,n){const x=new Date(d+'T00:00:00');x.setDate(x.getDate()+n);return iso(x)}
+let wk=null;
+const ITEMS=['체결 내역 전체','포지션별 스탑(지정청산주문) 화면','입출금','스크린타임 (평일 매일)'];
+function submit(){
+  wk=wk||monday(addDays(S.today,-7)); const end=addDays(wk,6), J=S.journal, inW=d=>d&&d>=wk&&d<=end;
+  const ent=J.trades.filter(t=>inW(t.entry_date)).map(t=>`- 진입 ${t.product} ${dirK(t.dir)} ${t.entry_date} @${t.entry_price} ${t.contracts} / 1R ${t.R_price} / 초기 스탑 ${t.stop_init}`);
+  const ex=J.trades.filter(t=>inW(t.exit_date)).map(t=>`- 청산 ${t.product} ${t.exit_date} @${t.exit_price} 손익 ${t.pnl_usd}`);
+  const pyrs=J.trades.filter(t=>t.pyramid&&inW(t.pyramid.date)).map(t=>`- 피라미딩 ${t.product} ${t.pyramid.decision} (${t.pyramid.memo})`);
+  const cf=J.cashflows.filter(c=>inW(c.date)).map(c=>`- ${c.kind==='deposit'?'입금':'출금'} ${c.date} ${c.usd} USD`);
+  const open=J.trades.filter(t=>!t.exit_date).map(t=>{const p=S.products.find(x=>x.p===t.product);const v=(p?.live||[]).find(v=>v.id===t.id)||{};return `- 보유 ${t.product} ${dirK(t.dir)} (진입 ${t.entry_date}) 참고 스탑 ${v.stop??'?'} / ${v.gain_R??'?'}R`});
+  const notes=J.notes.filter(n=>inW(n.date)).map(n=>`- [${n.tag}] ${n.text}`);
+  const simw=S.sim_trades.filter(t=>inW(t.d0)||inW(t.d1)).map(t=>`- 시뮬 A ${t.name} ${dirK(t.dir)} ${inW(t.d0)?'진입 '+t.d0:''} ${inW(t.d1)?'청산 '+t.d1+' '+t.R+'R':''}`);
+  const txt=[`주간 제출 ${wk} ~ ${end}`,'',`[실거래]`,...(ent.length||ex.length?[...ent,...ex]:['- 체결 없음']),...pyrs,'','[보유 포지션]',...(open.length?open:['- 없음']),'','[입출금]',...(cf.length?cf:['- 없음']),'','[시뮬 A]',...(simw.length?simw:['- 변동 없음']),`- 누적 ${S.sim_stats.total}R, 낙폭 ${S.sim_stats.dd}R, 최근 3년 ${S.sim_stats.three_year}R`,'','[재량 메모]',...(notes.length?notes:['- 없음'])].join('\n');
+  let sub=J.submissions.find(s=>s.week===wk); const chk=sub?.items||{};
+  return `<div class="card"><div class="form"><label>주 시작(월)<input type="date" value="${wk}" onchange="wk=monday(this.value);render()"></label></div></div>
+  <div class="card"><h3>첨부할 화면</h3>${ITEMS.map((x,i)=>`<label style="display:block"><input type="checkbox" ${chk[i]?'checked':''} onchange="tick(${i},this.checked)"> ${x}</label>`).join('')}
+   <p>${sub?.sent?'<span class="pos">제출 완료 '+sub.sent+'</span>':`<button class="b p" onclick="sent()">제출 완료로 표시</button>`}</p></div>
+  <div class="card"><h3>제출 텍스트 <button class="b" onclick="navigator.clipboard.writeText(document.getElementById('st').textContent)">복사</button></h3><pre id="st">${esc(txt)}</pre></div>`;
+}
+function subOf(){let s=S.journal.submissions.find(s=>s.week===wk);if(!s){s={week:wk,items:{}};S.journal.submissions.push(s)}return s}
+function tick(i,v){subOf().items[i]=v;saveJ()}
+function sent(){subOf().sent=S.today;saveJ()}
+load();
+</script>
+</body>
+</html>
